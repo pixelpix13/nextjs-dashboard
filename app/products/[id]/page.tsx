@@ -5,6 +5,16 @@ import { ArrowLeftIcon, CheckCircleIcon, XCircleIcon } from '@heroicons/react/24
 import AddToCartButton from '@/app/ui/products/add-to-cart-button';
 import CartIcon from '@/app/ui/cart-icon';
 
+// Generate consistent rating count based on product ID
+function getRatingCount(productId: string) {
+  let hash = 0;
+  for (let i = 0; i < productId.length; i++) {
+    hash = ((hash << 5) - hash) + productId.charCodeAt(i);
+    hash = hash & hash;
+  }
+  return Math.abs(hash % 900) + 500;
+}
+
 export default async function ProductDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const product = await getProductById(id);
@@ -64,7 +74,7 @@ export default async function ProductDetailPage({ params }: { params: Promise<{ 
                   {'⭐️'.repeat(4)}{'☆'}
                 </div>
                 <span className="text-sm text-blue-600 hover:text-orange-600">
-                  {Math.floor(Math.random() * 1000) + 500} ratings
+                  {getRatingCount(product.id)} ratings
                 </span>
               </div>
 

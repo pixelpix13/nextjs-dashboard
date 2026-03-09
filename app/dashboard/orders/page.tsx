@@ -38,6 +38,9 @@ export default async function OrdersPage() {
                       Customer
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
+                      Products
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
                       Date
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
@@ -59,6 +62,11 @@ export default async function OrdersPage() {
                       </td>
                       <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-900">
                         {order.user_name}
+                      </td>
+                      <td className="px-6 py-4 text-sm text-gray-600">
+                        <div className="max-w-xs truncate" title={order.product_names}>
+                          {order.product_names || 'N/A'}
+                        </div>
                       </td>
                       <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-500">
                         {new Date(order.created_at).toLocaleDateString('en-US', {

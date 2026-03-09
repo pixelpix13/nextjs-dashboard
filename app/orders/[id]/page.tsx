@@ -66,9 +66,22 @@ export default async function OrderDetailPage({ params }: { params: Promise<{ id
     WHERE oi.order_id = ${id}
   `;
 
-  const shippingInfo = typeof order.shipping_address === 'string' 
-    ? JSON.parse(order.shipping_address) 
-    : order.shipping_address;
+  let shippingInfo;
+  try {
+    shippingInfo = typeof order.shipping_address === 'string' 
+      ? JSON.parse(order.shipping_address) 
+      : order.shipping_address;
+  } catch (error) {
+    console.error('Failed to parse shipping address:', error);
+    shippingInfo = { 
+      fullName: 'N/A', 
+      address: 'Invalid address data',
+      city: '',
+      state: '',
+      zipCode: '',
+      country: ''
+    };
+  }
 
   const subtotal = orderItems.reduce((sum, item) => sum + (Number(item.price) * Number(item.quantity)), 0);
   const shipping = 10;

@@ -85,6 +85,8 @@ export type Order = {
 export type OrderWithUser = Order & {
   user_name: string;
   user_email: string;
+  product_names: string;
+  item_count: string | number;
 };
 
 export type OrderItem = {

@@ -2,6 +2,7 @@ import Link from 'next/link';
 import NavLinks from '@/app/ui/dashboard/nav-links';
 import { PowerIcon } from '@heroicons/react/24/outline';
 import { ShoppingBagIcon } from '@heroicons/react/24/solid';
+import { handleSignOut } from '@/app/lib/actions';
 
 export default function SideNav() {
   return (
@@ -29,7 +30,7 @@ export default function SideNav() {
 
       {/* Sign Out Button */}
       <div className="border-t border-gray-200 p-4">
-        <form>
+        <form action={handleSignOut}>
           <button className="flex w-full items-center gap-3 rounded-lg px-4 py-3 text-sm font-medium text-gray-700 transition-colors hover:bg-red-50 hover:text-red-600">
             <PowerIcon className="h-5 w-5" />
             <span>Sign Out</span>

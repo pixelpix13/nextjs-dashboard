@@ -122,6 +122,76 @@ export async function getAllProducts() {
   }
 }
 
+export async function getProductsWithFilters({
+  search = '',
+  categoryId = '',
+  page = 1,
+  itemsPerPage = 10,
+}: {
+  search?: string;
+  categoryId?: string;
+  page?: number;
+  itemsPerPage?: number;
+}) {
+  try {
+    const offset = (page - 1) * itemsPerPage;
+    
+    // Build the WHERE clause dynamically
+    let whereClause = 'WHERE p.is_active = true';
+    const params: any[] = [];
+    let paramIndex = 1;
+    
+    if (search) {
+      whereClause += ` AND (p.name ILIKE $${paramIndex} OR p.description ILIKE $${paramIndex})`;
+      params.push(`%${search}%`);
+      paramIndex++;
+    }
+    
+    if (categoryId) {
+      whereClause += ` AND p.category_id = $${paramIndex}`;
+      params.push(categoryId);
+      paramIndex++;
+    }
+    
+    // Get total count
+    const countQuery = `
+      SELECT COUNT(*) as count
+      FROM products p
+      ${whereClause}
+    `;
+    
+    const countResult = await sql.unsafe(countQuery, params);
+    const totalItems = Number(countResult[0].count);
+    
+    // Get products
+    const productsQuery = `
+      SELECT 
+        p.*,
+        c.name as category_name
+      FROM products p
+      LEFT JOIN categories c ON p.category_id = c.id
+      ${whereClause}
+      ORDER BY p.created_at DESC
+      LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
+    `;
+    
+    const products = await sql.unsafe(productsQuery, [...params, itemsPerPage, offset]);
+    
+    return {
+      products,
+      pagination: {
+        currentPage: page,
+        totalPages: Math.ceil(totalItems / itemsPerPage),
+        totalItems,
+        itemsPerPage,
+      },
+    };
+  } catch (error) {
+    console.error('Database Error:', error);
+    throw new Error('Failed to fetch products with filters.');
+  }
+}
+
 export async function getProductById(id: string) {
   try {
     const products = await sql<ProductWithCategory[]>`
@@ -239,9 +309,14 @@ export async function getAllOrders() {
       SELECT 
         o.*,
         u.name as user_name,
-        u.email as user_email
+        u.email as user_email,
+        STRING_AGG(DISTINCT p.name, ', ') as product_names,
+        COUNT(DISTINCT oi.id) as item_count
       FROM orders o
       JOIN users u ON o.user_id = u.id
+      LEFT JOIN order_items oi ON o.id = oi.order_id
+      LEFT JOIN products p ON oi.product_id = p.id
+      GROUP BY o.id, u.name, u.email
       ORDER BY o.created_at DESC
     `;
     return orders;
@@ -443,5 +518,48 @@ export async function fetchDashboardStats() {
   } catch (error) {
     console.error('Database Error:', error);
     throw new Error('Failed to fetch dashboard stats.');
+  }
+}
+
+export async function getOrdersPerDay(days: number = 7) {
+  try {
+    const orders = await sql`
+      SELECT 
+        DATE(created_at) as date,
+        COUNT(*) as count,
+        SUM(total_amount) as revenue
+      FROM orders
+      WHERE created_at >= NOW() - INTERVAL '7 days'
+      GROUP BY DATE(created_at)
+      ORDER BY date ASC
+    `;
+    return orders;
+  } catch (error) {
+    console.error('Database Error:', error);
+    throw new Error('Failed to fetch orders per day.');
+  }
+}
+
+export async function getMostBoughtProducts(limit: number = 5) {
+  try {
+    const products = await sql`
+      SELECT 
+        p.id,
+        p.name,
+        p.price,
+        SUM(oi.quantity) as total_sold,
+        COUNT(DISTINCT oi.order_id) as order_count
+      FROM products p
+      JOIN order_items oi ON p.id = oi.product_id
+      JOIN orders o ON oi.order_id = o.id
+      WHERE o.status IN ('delivered', 'shipped', 'processing')
+      GROUP BY p.id, p.name, p.price
+      ORDER BY total_sold DESC
+      LIMIT ${limit}
+    `;
+    return products;
+  } catch (error) {
+    console.error('Database Error:', error);
+    throw new Error('Failed to fetch most bought products.');
   }
 }

@@ -40,9 +40,11 @@ export default async function MyOrdersPage() {
       o.status,
       o.created_at,
       o.shipping_address,
-      COUNT(oi.id) as item_count
+      COUNT(DISTINCT oi.id) as item_count,
+      STRING_AGG(DISTINCT p.name, ', ') as product_names
     FROM orders o
     LEFT JOIN order_items oi ON o.id = oi.order_id
+    LEFT JOIN products p ON oi.product_id = p.id
     WHERE o.user_id = ${userId}
     GROUP BY o.id, o.total_amount, o.status, o.created_at, o.shipping_address
     ORDER BY o.created_at DESC
@@ -94,9 +96,32 @@ export default async function MyOrdersPage() {
         ) : (
           <div className="space-y-4">
             {orders.map((order) => {
-              const shippingInfo = typeof order.shipping_address === 'string' 
-                ? JSON.parse(order.shipping_address) 
-                : order.shipping_address;
+              let shippingInfo;
+              try {
+                if (typeof order.shipping_address === 'string') {
+                  // Trim and validate the string before parsing
+                  const trimmed = order.shipping_address.trim();
+                  if (trimmed && trimmed.startsWith('{')) {
+                    shippingInfo = JSON.parse(trimmed);
+                  } else {
+                    throw new Error('Invalid JSON format');
+                  }
+                } else if (order.shipping_address && typeof order.shipping_address === 'object') {
+                  shippingInfo = order.shipping_address;
+                } else {
+                  throw new Error('No shipping address data');
+                }
+              } catch (error) {
+                // Silently handle malformed data with fallback
+                shippingInfo = { 
+                  fullName: 'N/A', 
+                  address: 'Invalid address data',
+                  city: '',
+                  state: '',
+                  zipCode: '',
+                  country: ''
+                };
+              }
               
               const statusColors: Record<string, string> = {
                 pending: 'bg-yellow-100 text-yellow-800',
@@ -134,7 +159,12 @@ export default async function MyOrdersPage() {
                             day: 'numeric'
                           })}
                         </p>
-                        <p>{order.item_count} items</p>
+                        <p className="font-medium text-gray-700">{order.item_count} items</p>
+                        {order.product_names && (
+                          <p className="line-clamp-2 text-gray-600" title={order.product_names}>
+                            Products: {order.product_names}
+                          </p>
+                        )}
                         {shippingInfo?.fullName && (
                           <p>Deliver to: {shippingInfo.fullName}</p>
                         )}

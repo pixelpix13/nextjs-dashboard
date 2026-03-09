@@ -1,11 +1,10 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { useRouter } from 'next/navigation';
 import { UserIcon, ChevronDownIcon } from '@heroicons/react/24/outline';
+import { handleSignOut } from '@/app/lib/actions';
 
 export default function UserMenu() {
-  const router = useRouter();
   const [user, setUser] = useState<{ name: string; email: string } | null>(null);
   const [isOpen, setIsOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -33,16 +32,6 @@ export default function UserMenu() {
       }
     } catch (error) {
       console.error('Failed to fetch user:', error);
-    }
-  };
-
-  const handleSignOut = async () => {
-    try {
-      await fetch('/api/auth/signout', { method: 'POST' });
-      router.push('/');
-      router.refresh();
-    } catch (error) {
-      console.error('Sign out error:', error);
     }
   };
 
@@ -100,12 +89,14 @@ export default function UserMenu() {
             >
               Admin Portal
             </a>
-            <button
-              onClick={handleSignOut}
-              className="w-full rounded-md px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
-            >
-              Sign Out
-            </button>
+            <form action={handleSignOut} className="w-full">
+              <button
+                type="submit"
+                className="w-full rounded-md px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
+              >
+                Sign Out
+              </button>
+            </form>
           </div>
         </div>
       )}
