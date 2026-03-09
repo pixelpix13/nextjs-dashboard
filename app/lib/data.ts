@@ -1,224 +1,447 @@
 import postgres from 'postgres';
 import {
-  CustomerField,
-  CustomersTableType,
-  InvoiceForm,
-  InvoicesTable,
-  LatestInvoiceRaw,
-  Revenue,
+  User,
+  SafeUser,
+  Category,
+  Product,
+  ProductWithCategory,
+  ProductCard,
+  Order,
+  OrderWithUser,
+  OrderDetails,
+  OrderItemWithProduct,
+  CartItemWithProduct,
+  CartSummary,
+  DashboardStats,
+  RecentOrder,
+  CategoryField,
 } from './definitions';
 import { formatCurrency } from './utils';
 
 const sql = postgres(process.env.POSTGRES_URL!, { 
-  ssl: 'require',
   idle_timeout: 20,
   max_lifetime: 60 * 30
 });
 
-export async function fetchRevenue() {
+// ============= USER FUNCTIONS =============
+
+export async function getUserByEmail(email: string) {
   try {
-    // Artificially delay a response for demo purposes.
-    // Don't do this in production :)
-
-    console.log('Fetching revenue data...');
-    await new Promise((resolve) => setTimeout(resolve, 3000));
-
-    const data = await sql<Revenue[]>`SELECT * FROM revenue`;
-
-    console.log('Data fetch completed after 3 seconds.');
-
-    return data;
+    const users = await sql<User[]>`
+      SELECT * FROM users WHERE email = ${email} LIMIT 1
+    `;
+    return users[0];
   } catch (error) {
     console.error('Database Error:', error);
-    throw new Error('Failed to fetch revenue data.');
+    throw new Error('Failed to fetch user.');
   }
 }
 
-export async function fetchLatestInvoices() {
+export async function getUserById(id: string) {
   try {
-    console.log('Fetching latest invoices data...');
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    const data = await sql<LatestInvoiceRaw[]>`
-      SELECT invoices.amount, customers.name, customers.image_url, customers.email, invoices.id
-      FROM invoices
-      JOIN customers ON invoices.customer_id = customers.id
-      ORDER BY invoices.date DESC
-      LIMIT 5`;
-
-    const latestInvoices = data.map((invoice) => ({
-      ...invoice,
-      amount: formatCurrency(invoice.amount),
-    }));
-    return latestInvoices;
+    const users = await sql<SafeUser[]>`
+      SELECT id, name, email, role, created_at, updated_at 
+      FROM users WHERE id = ${id} LIMIT 1
+    `;
+    return users[0];
   } catch (error) {
     console.error('Database Error:', error);
-    throw new Error('Failed to fetch the latest invoices.');
+    throw new Error('Failed to fetch user.');
   }
 }
 
-export async function fetchCardData() {
+export async function getAllUsers() {
   try {
-    // You can probably combine these into a single SQL query
-    // However, we are intentionally splitting them to demonstrate
-    // how to initialize multiple queries in parallel with JS.
-    const invoiceCountPromise = sql`SELECT COUNT(*) FROM invoices`;
-    const customerCountPromise = sql`SELECT COUNT(*) FROM customers`;
-    const invoiceStatusPromise = sql`SELECT
-         SUM(CASE WHEN status = 'paid' THEN amount ELSE 0 END) AS "paid",
-         SUM(CASE WHEN status = 'pending' THEN amount ELSE 0 END) AS "pending"
-         FROM invoices`;
-
-    const data = await Promise.all([
-      invoiceCountPromise,
-      customerCountPromise,
-      invoiceStatusPromise,
-    ]);
-
-    const numberOfInvoices = Number(data[0][0].count ?? '0');
-    const numberOfCustomers = Number(data[1][0].count ?? '0');
-    const totalPaidInvoices = formatCurrency(data[2][0].paid ?? '0');
-    const totalPendingInvoices = formatCurrency(data[2][0].pending ?? '0');
-
-    return {
-      numberOfCustomers,
-      numberOfInvoices,
-      totalPaidInvoices,
-      totalPendingInvoices,
-    };
+    const users = await sql<SafeUser[]>`
+      SELECT id, name, email, role, created_at, updated_at 
+      FROM users 
+      ORDER BY created_at DESC
+    `;
+    return users;
   } catch (error) {
     console.error('Database Error:', error);
-    throw new Error('Failed to fetch card data.');
+    throw new Error('Failed to fetch users.');
   }
 }
 
-const ITEMS_PER_PAGE = 6;
-export async function fetchFilteredInvoices(
+// ============= CATEGORY FUNCTIONS =============
+
+export async function getAllCategories() {
+  try {
+    const categories = await sql<Category[]>`
+      SELECT * FROM categories ORDER BY name ASC
+    `;
+    return categories;
+  } catch (error) {
+    console.error('Database Error:', error);
+    throw new Error('Failed to fetch categories.');
+  }
+}
+
+export async function getCategoryById(id: string) {
+  try {
+    const categories = await sql<Category[]>`
+      SELECT * FROM categories WHERE id = ${id}
+    `;
+    return categories[0];
+  } catch (error) {
+    console.error('Database Error:', error);
+    throw new Error('Failed to fetch category.');
+  }
+}
+
+export async function getCategoryFields() {
+  try {
+    const categories = await sql<CategoryField[]>`
+      SELECT id, name FROM categories ORDER BY name ASC
+    `;
+    return categories;
+  } catch (error) {
+    console.error('Database Error:', error);
+    throw new Error('Failed to fetch category fields.');
+  }
+}
+
+// ============= PRODUCT FUNCTIONS =============
+
+export async function getAllProducts() {
+  try {
+    const products = await sql<ProductWithCategory[]>`
+      SELECT 
+        p.*,
+        c.name as category_name
+      FROM products p
+      LEFT JOIN categories c ON p.category_id = c.id
+      WHERE p.is_active = true
+      ORDER BY p.created_at DESC
+    `;
+    return products;
+  } catch (error) {
+    console.error('Database Error:', error);
+    throw new Error('Failed to fetch products.');
+  }
+}
+
+export async function getProductById(id: string) {
+  try {
+    const products = await sql<ProductWithCategory[]>`
+      SELECT 
+        p.*,
+        c.name as category_name
+      FROM products p
+      LEFT JOIN categories c ON p.category_id = c.id
+      WHERE p.id = ${id}
+    `;
+    return products[0];
+  } catch (error) {
+    console.error('Database Error:', error);
+    throw new Error('Failed to fetch product.');
+  }
+}
+
+const ITEMS_PER_PAGE = 12;
+
+export async function fetchFilteredProducts(
   query: string,
-  currentPage: number,
+  categoryId: string,
+  currentPage: number
 ) {
   const offset = (currentPage - 1) * ITEMS_PER_PAGE;
 
   try {
-    const invoices = await sql<InvoicesTable[]>`
-      SELECT
-        invoices.id,
-        invoices.amount,
-        invoices.date,
-        invoices.status,
-        customers.name,
-        customers.email,
-        customers.image_url
-      FROM invoices
-      JOIN customers ON invoices.customer_id = customers.id
-      WHERE
-        customers.name ILIKE ${`%${query}%`} OR
-        customers.email ILIKE ${`%${query}%`} OR
-        invoices.amount::text ILIKE ${`%${query}%`} OR
-        invoices.date::text ILIKE ${`%${query}%`} OR
-        invoices.status ILIKE ${`%${query}%`}
-      ORDER BY invoices.date DESC
+    const products = await sql<ProductCard[]>`
+      SELECT 
+        p.id,
+        p.name,
+        p.price,
+        p.image_url,
+        p.stock_quantity,
+        c.name as category_name
+      FROM products p
+      LEFT JOIN categories c ON p.category_id = c.id
+      WHERE 
+        p.is_active = true
+        AND (p.name ILIKE ${`%${query}%`} OR p.description ILIKE ${`%${query}%`})
+        AND (${categoryId === '' ? sql`true` : sql`p.category_id = ${categoryId}`})
+      ORDER BY p.created_at DESC
       LIMIT ${ITEMS_PER_PAGE} OFFSET ${offset}
     `;
-
-    return invoices;
+    return products;
   } catch (error) {
     console.error('Database Error:', error);
-    throw new Error('Failed to fetch invoices.');
+    throw new Error('Failed to fetch products.');
   }
 }
 
-export async function fetchInvoicesPages(query: string) {
+export async function fetchProductsPages(query: string, categoryId: string) {
   try {
-    const data = await sql`SELECT COUNT(*)
-    FROM invoices
-    JOIN customers ON invoices.customer_id = customers.id
-    WHERE
-      customers.name ILIKE ${`%${query}%`} OR
-      customers.email ILIKE ${`%${query}%`} OR
-      invoices.amount::text ILIKE ${`%${query}%`} OR
-      invoices.date::text ILIKE ${`%${query}%`} OR
-      invoices.status ILIKE ${`%${query}%`}
-  `;
-
+    const data = await sql`
+      SELECT COUNT(*)
+      FROM products p
+      WHERE 
+        p.is_active = true
+        AND (p.name ILIKE ${`%${query}%`} OR p.description ILIKE ${`%${query}%`})
+        AND (${categoryId === '' ? sql`true` : sql`p.category_id = ${categoryId}`})
+    `;
     const totalPages = Math.ceil(Number(data[0].count) / ITEMS_PER_PAGE);
     return totalPages;
   } catch (error) {
     console.error('Database Error:', error);
-    throw new Error('Failed to fetch total number of invoices.');
+    throw new Error('Failed to fetch total number of products.');
   }
 }
 
-export async function fetchInvoiceById(id: string) {
+export async function getProductsByCategory(categoryId: string) {
   try {
-    const data = await sql<InvoiceForm[]>`
-      SELECT
-        invoices.id,
-        invoices.customer_id,
-        invoices.amount,
-        invoices.status
-      FROM invoices
-      WHERE invoices.id = ${id};
+    const products = await sql<ProductCard[]>`
+      SELECT 
+        p.id,
+        p.name,
+        p.price,
+        p.image_url,
+        p.stock_quantity,
+        c.name as category_name
+      FROM products p
+      LEFT JOIN categories c ON p.category_id = c.id
+      WHERE p.category_id = ${categoryId} AND p.is_active = true
+      ORDER BY p.name ASC
     `;
-
-    const invoice = data.map((invoice) => ({
-      ...invoice,
-      // Convert amount from cents to dollars
-      amount: invoice.amount / 100,
-    }));
-
-    return invoice[0];
+    return products;
   } catch (error) {
     console.error('Database Error:', error);
-    throw new Error('Failed to fetch invoice.');
+    throw new Error('Failed to fetch products by category.');
   }
 }
 
-export async function fetchCustomers() {
+export async function getLowStockProducts(threshold: number = 10) {
   try {
-    const customers = await sql<CustomerField[]>`
-      SELECT
-        id,
-        name
-      FROM customers
-      ORDER BY name ASC
+    const products = await sql<ProductWithCategory[]>`
+      SELECT 
+        p.*,
+        c.name as category_name
+      FROM products p
+      LEFT JOIN categories c ON p.category_id = c.id
+      WHERE p.stock_quantity < ${threshold} AND p.is_active = true
+      ORDER BY p.stock_quantity ASC
     `;
-
-    return customers;
-  } catch (err) {
-    console.error('Database Error:', err);
-    throw new Error('Failed to fetch all customers.');
+    return products;
+  } catch (error) {
+    console.error('Database Error:', error);
+    throw new Error('Failed to fetch low stock products.');
   }
 }
 
-export async function fetchFilteredCustomers(query: string) {
+// ============= ORDER FUNCTIONS =============
+
+export async function getAllOrders() {
   try {
-    const data = await sql<CustomersTableType[]>`
-		SELECT
-		  customers.id,
-		  customers.name,
-		  customers.email,
-		  customers.image_url,
-		  COUNT(invoices.id) AS total_invoices,
-		  SUM(CASE WHEN invoices.status = 'pending' THEN invoices.amount ELSE 0 END) AS total_pending,
-		  SUM(CASE WHEN invoices.status = 'paid' THEN invoices.amount ELSE 0 END) AS total_paid
-		FROM customers
-		LEFT JOIN invoices ON customers.id = invoices.customer_id
-		WHERE
-		  customers.name ILIKE ${`%${query}%`} OR
-        customers.email ILIKE ${`%${query}%`}
-		GROUP BY customers.id, customers.name, customers.email, customers.image_url
-		ORDER BY customers.name ASC
-	  `;
+    const orders = await sql<OrderWithUser[]>`
+      SELECT 
+        o.*,
+        u.name as user_name,
+        u.email as user_email
+      FROM orders o
+      JOIN users u ON o.user_id = u.id
+      ORDER BY o.created_at DESC
+    `;
+    return orders;
+  } catch (error) {
+    console.error('Database Error:', error);
+    throw new Error('Failed to fetch orders.');
+  }
+}
 
-    const customers = data.map((customer) => ({
-      ...customer,
-      total_pending: formatCurrency(customer.total_pending),
-      total_paid: formatCurrency(customer.total_paid),
-    }));
+export async function getOrderById(id: string) {
+  try {
+    const orders = await sql<Order[]>`
+      SELECT * FROM orders WHERE id = ${id}
+    `;
+    
+    if (orders.length === 0) return null;
+    
+    const order = orders[0];
+    
+    // Fetch order items
+    const items = await sql<OrderItemWithProduct[]>`
+      SELECT 
+        oi.*,
+        p.name as product_name,
+        p.image_url as product_image_url
+      FROM order_items oi
+      JOIN products p ON oi.product_id = p.id
+      WHERE oi.order_id = ${id}
+    `;
+    
+    // Fetch user info
+    const users = await sql<SafeUser[]>`
+      SELECT id, name, email, role, created_at, updated_at
+      FROM users WHERE id = ${order.user_id}
+    `;
+    
+    const orderDetails: OrderDetails = {
+      ...order,
+      items,
+      user_name: users[0]?.name || '',
+      user_email: users[0]?.email || '',
+    };
+    
+    return orderDetails;
+  } catch (error) {
+    console.error('Database Error:', error);
+    throw new Error('Failed to fetch order details.');
+  }
+}
 
-    return customers;
-  } catch (err) {
-    console.error('Database Error:', err);
-    throw new Error('Failed to fetch customer table.');
+export async function getOrdersByUserId(userId: string) {
+  try {
+    const orders = await sql<Order[]>`
+      SELECT * FROM orders 
+      WHERE user_id = ${userId}
+      ORDER BY created_at DESC
+    `;
+    return orders;
+  } catch (error) {
+    console.error('Database Error:', error);
+    throw new Error('Failed to fetch user orders.');
+  }
+}
+
+export async function getRecentOrders(limit: number = 5) {
+  try {
+    const orders = await sql<RecentOrder[]>`
+      SELECT 
+        o.id,
+        o.total_amount,
+        o.status,
+        o.created_at,
+        u.name as user_name
+      FROM orders o
+      JOIN users u ON o.user_id = u.id
+      ORDER BY o.created_at DESC
+      LIMIT ${limit}
+    `;
+    return orders;
+  } catch (error) {
+    console.error('Database Error:', error);
+    throw new Error('Failed to fetch recent orders.');
+  }
+}
+
+export async function fetchFilteredOrders(query: string, currentPage: number) {
+  const offset = (currentPage - 1) * ITEMS_PER_PAGE;
+
+  try {
+    const orders = await sql<OrderWithUser[]>`
+      SELECT 
+        o.*,
+        u.name as user_name,
+        u.email as user_email
+      FROM orders o
+      JOIN users u ON o.user_id = u.id
+      WHERE
+        u.name ILIKE ${`%${query}%`} OR
+        u.email ILIKE ${`%${query}%`} OR
+        o.status ILIKE ${`%${query}%`} OR
+        o.id::text ILIKE ${`%${query}%`}
+      ORDER BY o.created_at DESC
+      LIMIT ${ITEMS_PER_PAGE} OFFSET ${offset}
+    `;
+    return orders;
+  } catch (error) {
+    console.error('Database Error:', error);
+    throw new Error('Failed to fetch orders.');
+  }
+}
+
+export async function fetchOrdersPages(query: string) {
+  try {
+    const data = await sql`
+      SELECT COUNT(*)
+      FROM orders o
+      JOIN users u ON o.user_id = u.id
+      WHERE
+        u.name ILIKE ${`%${query}%`} OR
+        u.email ILIKE ${`%${query}%`} OR
+        o.status ILIKE ${`%${query}%`} OR
+        o.id::text ILIKE ${`%${query}%`}
+    `;
+    const totalPages = Math.ceil(Number(data[0].count) / ITEMS_PER_PAGE);
+    return totalPages;
+  } catch (error) {
+    console.error('Database Error:', error);
+    throw new Error('Failed to fetch total number of orders.');
+  }
+}
+
+// ============= CART FUNCTIONS =============
+
+export async function getCartByUserId(userId: string) {
+  try {
+    const items = await sql<CartItemWithProduct[]>`
+      SELECT 
+        ci.*,
+        p.name as product_name,
+        p.price as product_price,
+        p.image_url as product_image_url,
+        p.stock_quantity as product_stock
+      FROM cart_items ci
+      JOIN products p ON ci.product_id = p.id
+      WHERE ci.user_id = ${userId}
+      ORDER BY ci.created_at DESC
+    `;
+    
+    const totalItems = items.reduce((sum, item) => sum + item.quantity, 0);
+    const totalAmount = items.reduce((sum, item) => sum + (item.product_price * item.quantity), 0);
+    
+    const cartSummary: CartSummary = {
+      items,
+      total_items: totalItems,
+      total_amount: totalAmount,
+    };
+    
+    return cartSummary;
+  } catch (error) {
+    console.error('Database Error:', error);
+    throw new Error('Failed to fetch cart.');
+  }
+}
+
+// ============= DASHBOARD STATS =============
+
+export async function fetchDashboardStats() {
+  try {
+    const productCountPromise = sql`SELECT COUNT(*) FROM products WHERE is_active = true`;
+    const orderCountPromise = sql`SELECT COUNT(*) FROM orders`;
+    const customerCountPromise = sql`SELECT COUNT(*) FROM users WHERE role = 'customer'`;
+    const revenuePromise = sql`
+      SELECT SUM(total_amount) as total 
+      FROM orders 
+      WHERE status IN ('delivered', 'shipped', 'processing')
+    `;
+    const pendingOrdersPromise = sql`SELECT COUNT(*) FROM orders WHERE status = 'pending'`;
+    const lowStockPromise = sql`SELECT COUNT(*) FROM products WHERE stock_quantity < 10 AND is_active = true`;
+
+    const data = await Promise.all([
+      productCountPromise,
+      orderCountPromise,
+      customerCountPromise,
+      revenuePromise,
+      pendingOrdersPromise,
+      lowStockPromise,
+    ]);
+
+    const stats: DashboardStats = {
+      total_products: Number(data[0][0].count ?? 0),
+      total_orders: Number(data[1][0].count ?? 0),
+      total_customers: Number(data[2][0].count ?? 0),
+      total_revenue: Number(data[3][0].total ?? 0),
+      pending_orders: Number(data[4][0].count ?? 0),
+      low_stock_products: Number(data[5][0].count ?? 0),
+    };
+
+    return stats;
+  } catch (error) {
+    console.error('Database Error:', error);
+    throw new Error('Failed to fetch dashboard stats.');
   }
 }

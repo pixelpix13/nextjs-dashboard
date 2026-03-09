@@ -1,88 +1,166 @@
-// This file contains type definitions for your data.
-// It describes the shape of the data, and what data type each property should accept.
-// For simplicity of teaching, we're manually defining these types.
-// However, these types are generated automatically if you're using an ORM such as Prisma.
+// E-commerce Type Definitions
+// These types describe the shape of data for our e-commerce application
+
+// User types
 export type User = {
   id: string;
   name: string;
   email: string;
   password: string;
+  role: 'customer' | 'admin';
+  created_at: Date;
+  updated_at: Date;
 };
 
-export type Customer = {
-  id: string;
+export type UserForm = {
   name: string;
   email: string;
+  password: string;
+};
+
+export type SafeUser = Omit<User, 'password'>;
+
+// Category types
+export type Category = {
+  id: string;
+  name: string;
+  description: string;
+  image_url: string;
+  created_at: Date;
+};
+
+export type CategoryForm = {
+  name: string;
+  description: string;
   image_url: string;
 };
 
-export type Invoice = {
-  id: string;
-  customer_id: string;
-  amount: number;
-  date: string;
-  // In TypeScript, this is called a string union type.
-  // It means that the "status" property can only be one of the two strings: 'pending' or 'paid'.
-  status: 'pending' | 'paid';
-};
-
-export type Revenue = {
-  month: string;
-  revenue: number;
-};
-
-export type LatestInvoice = {
+// Product types
+export type Product = {
   id: string;
   name: string;
+  description: string;
+  price: number;
+  stock_quantity: number;
+  category_id: string;
   image_url: string;
-  email: string;
-  amount: string;
+  is_active: boolean;
+  created_at: Date;
+  updated_at: Date;
 };
 
-// The database returns a number for amount, but we later format it to a string with the formatCurrency function
-export type LatestInvoiceRaw = Omit<LatestInvoice, 'amount'> & {
-  amount: number;
+export type ProductWithCategory = Product & {
+  category_name: string;
 };
 
-export type InvoicesTable = {
-  id: string;
-  customer_id: string;
+export type ProductForm = {
   name: string;
-  email: string;
+  description: string;
+  price: number;
+  stock_quantity: number;
+  category_id: string;
   image_url: string;
-  date: string;
-  amount: number;
-  status: 'pending' | 'paid';
 };
 
-export type CustomersTableType = {
+export type ProductCard = {
   id: string;
   name: string;
-  email: string;
+  price: number;
   image_url: string;
-  total_invoices: number;
-  total_pending: number;
-  total_paid: number;
+  category_name: string;
+  stock_quantity: number;
 };
 
-export type FormattedCustomersTable = {
+// Order types
+export type Order = {
+  id: string;
+  user_id: string;
+  total_amount: number;
+  status: 'pending' | 'processing' | 'shipped' | 'delivered' | 'cancelled';
+  shipping_address: string;
+  created_at: Date;
+  updated_at: Date;
+};
+
+export type OrderWithUser = Order & {
+  user_name: string;
+  user_email: string;
+};
+
+export type OrderItem = {
+  id: string;
+  order_id: string;
+  product_id: string;
+  quantity: number;
+  price: number;
+  created_at: Date;
+};
+
+export type OrderItemWithProduct = OrderItem & {
+  product_name: string;
+  product_image_url: string;
+};
+
+export type OrderDetails = Order & {
+  items: OrderItemWithProduct[];
+  user_name: string;
+  user_email: string;
+};
+
+export type OrderForm = {
+  user_id: string;
+  shipping_address: string;
+  items: {
+    product_id: string;
+    quantity: number;
+    price: number;
+  }[];
+};
+
+// Cart types
+export type CartItem = {
+  id: string;
+  user_id: string;
+  product_id: string;
+  quantity: number;
+  created_at: Date;
+  updated_at: Date;
+};
+
+export type CartItemWithProduct = CartItem & {
+  product_name: string;
+  product_price: number;
+  product_image_url: string;
+  product_stock: number;
+};
+
+export type CartSummary = {
+  items: CartItemWithProduct[];
+  total_items: number;
+  total_amount: number;
+};
+
+// Dashboard stats types
+export type DashboardStats = {
+  total_products: number;
+  total_orders: number;
+  total_revenue: number;
+  total_customers: number;
+  pending_orders: number;
+  low_stock_products: number;
+};
+
+export type RecentOrder = {
+  id: string;
+  user_name: string;
+  total_amount: number;
+  status: string;
+  created_at: Date;
+};
+
+// Field types for forms
+export type CategoryField = {
   id: string;
   name: string;
-  email: string;
-  image_url: string;
-  total_invoices: number;
-  total_pending: string;
-  total_paid: string;
 };
 
-export type CustomerField = {
-  id: string;
-  name: string;
-};
-
-export type InvoiceForm = {
-  id: string;
-  customer_id: string;
-  amount: number;
-  status: 'pending' | 'paid';
-};
