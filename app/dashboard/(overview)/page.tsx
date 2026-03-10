@@ -6,8 +6,19 @@ import { Suspense } from 'react';
 import { LatestInvoicesSkeleton, CardsSkeleton } from '@/app/ui/skeletons';
 import { getOrdersPerDay } from '@/app/lib/data';
 
-export default async function Page() {
-  const ordersData = await getOrdersPerDay(7);
+const VALID_RANGES = [7, 14, 30, 90];
+
+export default async function Page({
+  searchParams,
+}: {
+  searchParams: Promise<{ range?: string }>;
+}) {
+  const params = await searchParams;
+  const range = VALID_RANGES.includes(Number(params?.range))
+    ? Number(params.range)
+    : 7;
+
+  const ordersData = await getOrdersPerDay(range);
 
   // Transform data to match expected format
   const chartData = ordersData.map((item: any) => ({
@@ -34,7 +45,7 @@ export default async function Page() {
       {/* Charts and Recent Activity */}
       <div className="mt-8 grid gap-6 lg:grid-cols-2">
         {/* Orders Chart */}
-        <OrdersChart data={chartData} />
+        <OrdersChart data={chartData} currentRange={range} />
 
         {/* Top Products */}
         <Suspense>

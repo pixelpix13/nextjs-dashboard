@@ -523,17 +523,65 @@ export async function fetchDashboardStats() {
 
 export async function getOrdersPerDay(days: number = 7) {
   try {
-    const orders = await sql`
-      SELECT 
-        DATE(created_at) as date,
-        COUNT(*) as count,
-        SUM(total_amount) as revenue
-      FROM orders
-      WHERE created_at >= NOW() - INTERVAL '7 days'
-      GROUP BY DATE(created_at)
-      ORDER BY date ASC
+    // Compute date bounds in Node.js (local timezone) to avoid UTC offset issues
+    const today = new Date();
+    const endDate = today.toLocaleDateString('en-CA');   // "2026-03-09"
+    const startDay = new Date(today);
+    startDay.setDate(startDay.getDate() - (days - 1));
+    const startDate = startDay.toLocaleDateString('en-CA'); // e.g. "2026-03-03"
+
+    // Build a local-timezone offset string (e.g. "+5 hours 30 minutes") so PostgreSQL
+    // groups timestamps by the same local date the browser shows to users.
+    const offsetMinutes = new Date().getTimezoneOffset(); // negative east of UTC
+    const offsetSign = offsetMinutes <= 0 ? '+' : '-';
+    const absMinutes = Math.abs(offsetMinutes);
+    const offsetHours = Math.floor(absMinutes / 60);
+    const offsetMins  = absMinutes % 60;
+    // Build a single offset string — used once in the subquery so postgres.js
+    // only creates one parameter ($1), avoiding the "must appear in GROUP BY" error
+    // that occurs when the same ${expression} is repeated (creating $1, $2, $3).
+    const tzOffset = `${offsetSign}${offsetHours} hours ${offsetMins} minutes`;
+
+    const rows = await sql`
+      SELECT
+        local_date::text AS date,
+        COUNT(*) AS count,
+        SUM(total_amount) AS revenue
+      FROM (
+        SELECT
+          total_amount,
+          (created_at + ${tzOffset}::interval)::date AS local_date
+        FROM orders
+      ) sub
+      WHERE local_date BETWEEN ${startDate}::date AND ${endDate}::date
+      GROUP BY local_date
+      ORDER BY local_date ASC
     `;
-    return orders;
+
+    // Index rows by YYYY-MM-DD string.
+    // NOTE: We cast local_date to text in SQL so postgres.js returns a plain string
+    // instead of a Date object. Without the cast, postgres.js creates a Date at
+    // midnight UTC — e.g. new Date('2026-03-09') — which toLocaleDateString()
+    // converts to '2026-03-08' in UTC-5 (Houston), shifting every date back by one day.
+    const rowsByDate = new Map<string, { count: number; revenue: number }>();
+    for (const row of rows) {
+      const dateKey = String(row.date).split('T')[0]; // always "YYYY-MM-DD"
+      rowsByDate.set(dateKey, {
+        count: Number(row.count),
+        revenue: Number(row.revenue),
+      });
+    }
+
+    // Build the full range, filling missing days with zeros
+    const result = [];
+    for (let i = 0; i < days; i++) {
+      const d = new Date(today);
+      d.setDate(today.getDate() - (days - 1 - i));
+      const dateKey = d.toLocaleDateString('en-CA');
+      const data = rowsByDate.get(dateKey) ?? { count: 0, revenue: 0 };
+      result.push({ date: dateKey, count: data.count, revenue: data.revenue });
+    }
+    return result;
   } catch (error) {
     console.error('Database Error:', error);
     throw new Error('Failed to fetch orders per day.');

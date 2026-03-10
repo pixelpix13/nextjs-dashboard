@@ -1024,6 +1024,7 @@ Replaced simple bar chart with proper histogram:
 - **Bars**: Gradient-filled with hover tooltips
 - **Tooltips**: Show order count and revenue on hover
 - **Responsive**: Scales properly on all screen sizes
+- **Always shows 7 days**: Uses `generate_series` so days with zero orders still appear
 
 #### Chart Structure
 ```
@@ -1034,6 +1035,75 @@ Replaced simple bar chart with proper histogram:
     5    |█       |    ...
     0    |________|
 ```
+
+### Chart Empty Bug Fix — Full History (March 9, 2026)
+
+This bug went through multiple iterations. Here is the complete history so you understand why the final solution looks the way it does.
+
+#### Iteration 1 — Wrong approach: generate_series in SQL
+
+**Problem**: Chart appeared empty; only days with orders showed bars.
+
+**Attempted fix**: PostgreSQL `generate_series` LEFT JOIN.
+
+**Why it failed**: `generate_series(date, date, interval)` returns `timestamp`, not `date`. Passing parameterized date strings broke the type cast inside the function, causing the LEFT JOIN to match nothing — all counts stayed 0.
+
+---
+
+#### Iteration 2 — Wrong approach: repeated `${}` in GROUP BY
+
+**Problem**: Still all zero. Switched to `generate_series` in JS, but needed timezone adjustment so PostgreSQL groups timestamps by the same local date the browser displays.
+
+**Attempted fix**:
+```sql
+SELECT   DATE(created_at + (${offsetSign + tzInterval})::interval) AS date,
+  ...GROUP BY DATE(created_at + (${tzInterval})::interval)
+```
+
+**Why it failed**: `postgres.js` converts each `${}` into a distinct numbered parameter (`$1`, `$2`, `$3`). Even though the values were identical, PostgreSQL saw `GROUP BY DATE(created_at + $3::interval)` as a different expression from `SELECT DATE(created_at + $1::interval)`, throwing:
+```
+column "orders.created_at" must appear in the GROUP BY clause or be used in an aggregate function
+```
+
+---
+
+#### Iteration 3 — CSS bug: bars invisible despite correct data
+
+**Problem**: Console log confirmed correct data (`count: 6` for Mar 8), but chart still showed flat lines.
+
+**Root cause**: Bar column wrappers had no fixed height (`flex flex-1 flex-col items-center`). `height: 85%` resolves as 85% of the parent's height — which was 0 because no height was set. Every bar collapsed to the 3px stub.
+
+**Fix**: Added `h-full` to column wrappers so `height: X%` resolves against the 256px (`h-64`) chart container.
+
+---
+
+#### Final Solution — Subquery approach
+
+**Files changed**: `app/lib/data.ts`, `app/ui/dashboard/orders-chart.tsx`
+
+**SQL**: Compute the timezone-adjusted date once inside a subquery, then `GROUP BY` the alias in the outer query. `postgres.js` only creates **one parameter** (`$1`), so PostgreSQL can match `GROUP BY local_date` to `SELECT local_date` without ambiguity:
+
+```sql
+SELECT
+  local_date AS date,
+  COUNT(*) AS count,
+  SUM(total_amount) AS revenue
+FROM (
+  SELECT
+    total_amount,
+    (created_at + $1::interval)::date AS local_date  -- tzOffset: '+5 hours 30 minutes'
+  FROM orders
+) sub
+WHERE local_date BETWEEN $2::date AND $3::date
+GROUP BY local_date
+ORDER BY local_date ASC
+```
+
+**JS**: Missing days are filled with `{count: 0, revenue: 0}` by iterating the range in Node.js and looking up a `Map` keyed by `YYYY-MM-DD` strings.
+
+**Bar height CSS**: Each bar column wrapper gets `h-full` so percentage heights resolve correctly inside the `h-64` chart area.
+
+---
 
 ### Sign Out Fix (March 9, 2026)
 
@@ -1088,6 +1158,297 @@ const getRatingCount = (productId: string) => {
 
 ---
 
+## How the App Works — Step by Step Learning Guide
+
+This section walks through every layer of the app, from browser request to database, so you can understand exactly what each file does and why.
+
+---
+
+### Step 1 — Request Enters the App: `next.config.ts` & `middleware.ts`
+
+Every request first hits **Next.js middleware** before any page loads.
+
+**`next.config.ts`** — Minimal config file. Currently empty; it's where you'd add image domains, redirects, or environment variable exposure.
+
+**`auth.config.ts`** — Defines _which routes need authentication_:
+```ts
+callbacks: {
+  authorized({ auth, request: { nextUrl } }) {
+    const isLoggedIn = !!auth?.user;        // Is there a session?
+    const isOnDashboard = nextUrl.pathname.startsWith('/dashboard');
+    if (isOnDashboard) {
+      return isLoggedIn;  // Block unauthenticated users
+    }
+    return true; // Public routes: anyone can access
+  },
+}
+```
+Result: Any `/dashboard/*` URL without a session → automatically redirected to `/login`.
+
+---
+
+### Step 2 — Root Layout: `app/layout.tsx`
+
+Every page on the site shares this wrapper. It:
+- Applies the **Inter** font globally
+- Sets `<html lang="en">`
+- Includes global CSS (`global.css`)
+- Exports SEO `metadata` (page titles, descriptions)
+
+```tsx
+export default function RootLayout({ children }) {
+  return (
+    <html lang="en">
+      <body className={`${inter.className} antialiased`}>
+        {children}  {/* Every page renders here */}
+      </body>
+    </html>
+  );
+}
+```
+
+---
+
+### Step 3 — Homepage (Storefront): `app/page.tsx`
+
+This is the **customer-facing product store**. It is an `async` Server Component — it runs on the server, queries the database directly, and returns HTML.
+
+**What it does:**
+1. Reads `searchParams` from the URL (e.g. `?search=laptop&categoryId=xyz&page=2`)
+2. Calls `getProductsWithFilters()` from `data.ts`
+3. Passes the resulting product list + pagination info to `<ProductsList />`
+
+**Key concept**: Because this is a Server Component, there is no API call — the database query runs directly inside the component function.
+
+---
+
+### Step 4 — Type Definitions: `app/lib/definitions.ts`
+
+This file is the **blueprint for all data shapes** in the app. Every table in the database has a corresponding TypeScript type here.
+
+| Type | Purpose |
+|---|---|
+| `User` | Full user row (includes hashed password) |
+| `SafeUser` | User without password (safe to expose) |
+| `Product` | Single product row |
+| `ProductWithCategory` | Product + its category name joined |
+| `Order` | Order row (status, amount, shipping) |
+| `OrderWithUser` | Order + customer name, email, product names |
+| `CartItemWithProduct` | Cart item + product details |
+
+**Why this matters**: TypeScript uses these types to catch bugs at compile time — e.g., if you try to access `order.user_name` but the function returns a plain `Order`, TypeScript will warn you.
+
+---
+
+### Step 5 — Database Queries: `app/lib/data.ts`
+
+This is the **data access layer** — all SQL queries live here. It connects to PostgreSQL using `postgres.js`:
+
+```ts
+const sql = postgres(process.env.POSTGRES_URL!, {
+  idle_timeout: 20,
+  max_lifetime: 60 * 30   // Recycle connections every 30 min
+});
+```
+
+**Key functions and what they do:**
+
+| Function | SQL Operation | Used By |
+|---|---|---|
+| `getUserByEmail(email)` | `SELECT * FROM users WHERE email=...` | `auth.ts` on login |
+| `getAllProducts()` | `SELECT ... FROM products JOIN categories` | Homepage |
+| `getProductsWithFilters()` | Products + ILIKE search + pagination | Homepage search/filter |
+| `getProductById(id)` | Single product with category | Product detail page |
+| `fetchDashboardStats()` | 4 queries in parallel (revenue, orders, products, customers) | Dashboard cards |
+| `getOrdersPerDay(7)` | `generate_series` LEFT JOIN orders | Dashboard chart |
+| `getMostBoughtProducts(5)` | `SUM(quantity)` grouped by product | Dashboard top products |
+| `getAllOrders()` | Orders + user names + product names via `STRING_AGG` | Admin orders list |
+
+**Tagged Template Literals**: `sql\`SELECT ...\`` automatically escapes all values — this prevents SQL injection.
+
+---
+
+### Step 6 — Server Actions: `app/lib/actions.ts`
+
+Server Actions are **functions that run on the server, triggered by a form submit or button click in the browser**. No API endpoint needed.
+
+**`authenticate()`** — Handles login form:
+```ts
+export async function authenticate(prevState, formData) {
+  await signIn('credentials', formData);  // NextAuth checks password
+}
+```
+
+**`handleSignOut()`** — Handles sign out button:
+```ts
+export async function handleSignOut() {
+  await signOut();  // NextAuth destroys session
+}
+```
+
+**`registerUser()`** — Creates new user:
+1. Validates form data with Zod schema
+2. Hashes password with bcrypt
+3. Inserts into `users` table
+4. Returns errors or success
+
+---
+
+### Step 7 — Authentication: `auth.ts` & `auth.config.ts`
+
+**`auth.ts`** is the core of login. It uses **NextAuth with the Credentials provider**:
+
+```ts
+Credentials({
+  async authorize(credentials) {
+    const user = await getUser(credentials.email); // Fetch from DB
+    if (!user) return null;                         // Email not found
+    const match = await bcrypt.compare(credentials.password, user.password);
+    if (!match) return null;                        // Wrong password
+    return user;                                    // Login success!
+  }
+})
+```
+
+Exports:
+- `auth` — Call from server components to get current session
+- `signIn` — Call to log a user in
+- `signOut` — Call to destroy the session
+
+---
+
+### Step 8 — Dashboard Layout: `app/dashboard/layout.tsx`
+
+All admin pages (`/dashboard/*`) share this layout:
+```tsx
+<div className="flex h-screen">
+  <div className="w-64">          {/* Fixed sidebar */}
+    <SideNav />
+  </div>
+  <div className="flex-1 overflow-y-auto">  {/* Scrollable content */}
+    <div className="p-8">{children}</div>   {/* Each page renders here */}
+  </div>
+</div>
+```
+
+This is why the sidebar always stays visible while the right side scrolls.
+
+---
+
+### Step 9 — Dashboard Page: `app/dashboard/(overview)/page.tsx`
+
+This is the admin home screen. It fetches all its data on the server:
+
+```ts
+const ordersData = await getOrdersPerDay(7);   // Chart data
+// CardWrapper and TopProducts fetch their own data internally
+```
+
+Uses `<Suspense>` to stream the page progressively:
+- Stats cards load with a skeleton → then real numbers appear
+- Top products stream in after the chart
+- Recent orders appear last
+
+This means the page starts showing content immediately, even before all queries finish.
+
+---
+
+### Step 10 — Dashboard Chart: `app/ui/dashboard/orders-chart.tsx`
+
+A **Client Component** (`'use client'`) that receives `data` from the server page.
+
+**Why client?** It uses `useEffect` and `useState` to calculate the max Y-axis value after the data arrives.
+
+**Rendering logic:**
+1. `useEffect` calculates `maxValue` from the highest order count
+2. Y-axis: 6 labels from 0 to maxValue
+3. For each data point: bar height = `(count / maxValue) * 100%`
+4. X-axis: formatted dates below bars
+5. Hover tooltip shows exact order count + revenue
+
+---
+
+### Step 11 — API Routes: `app/api/*/route.ts`
+
+These are **REST endpoints** for operations that need to be called from client-side code.
+
+**Pattern every API route follows:**
+```ts
+export async function POST(request: Request) {
+  const session = await auth();              // Check who's calling
+  if (!session?.user?.id) {
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+  
+  const body = await request.json();         // Parse request body
+  // ... do database work ...
+  return Response.json({ success: true });    // Return result
+}
+```
+
+**Why API routes instead of Server Actions for cart/orders?**  
+Cart operations are triggered by button clicks in Client Components. Server Actions work too, but API routes give easier control over HTTP status codes and JSON responses.
+
+---
+
+### Step 12 — Putting It Together: A Full User Journey
+
+```
+Browser → middleware (auth check) → layout.tsx → page.tsx
+                                                      ↓
+                                              Server Component
+                                                      ↓
+                                               data.ts (SQL)
+                                                      ↓
+                                              PostgreSQL DB
+                                                      ↓
+                                           Returns typed data
+                                                      ↓
+                                         Renders HTML + ships
+                                           to browser
+                                                      ↓
+                                      Client Components hydrate
+                                     (AddToCartButton, CartIcon)
+                                                      ↓
+                                         User clicks "Add to Cart"
+                                                      ↓
+                                        fetch('/api/cart') POST
+                                                      ↓
+                                      API route validates session
+                                                      ↓
+                                         Inserts into cart_items
+                                                      ↓
+                                     CartIcon re-fetches and
+                                       updates badge count
+```
+
+---
+
+### File Quick Reference
+
+| File | What it does |
+|---|---|
+| `auth.config.ts` | Defines which routes need login |
+| `auth.ts` | NextAuth setup with bcrypt password check |
+| `middleware.ts` | Runs auth check on every request |
+| `app/layout.tsx` | HTML shell, global font & CSS |
+| `app/page.tsx` | Customer storefront homepage |
+| `app/dashboard/(overview)/page.tsx` | Admin dashboard home |
+| `app/dashboard/layout.tsx` | Sidebar + content layout for admin |
+| `app/lib/definitions.ts` | TypeScript types for all DB tables |
+| `app/lib/data.ts` | All SQL queries |
+| `app/lib/actions.ts` | Server actions (login, register, sign out) |
+| `app/lib/utils.ts` | Helper functions (formatCurrency, etc.) |
+| `app/api/cart/route.ts` | REST API for cart CRUD |
+| `app/api/orders/route.ts` | REST API to create an order |
+| `app/ui/dashboard/orders-chart.tsx` | Bar chart (Client Component) |
+| `app/ui/dashboard/cards.tsx` | Stats cards (Server Component) |
+| `app/ui/user-menu.tsx` | Profile dropdown with sign out |
+| `app/ui/dashboard/sidenav.tsx` | Admin sidebar with sign out |
+| `app/ui/global.css` | Global styles + custom animations |
+
+---
+
 ## Future Enhancements
 
 - [ ] Product image uploads (use cloud storage like AWS S3)
@@ -1123,4 +1484,4 @@ MIT License - Free to use and modify for personal and commercial projects.
 
 ---
 
-**Last Updated**: March 9, 2026
+**Last Updated**: March 9, 2026 — Added chart empty-bar fix (generate_series) and step-by-step learning guide

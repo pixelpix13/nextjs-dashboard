@@ -27,6 +27,48 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Invalid status' }, { status: 400 });
     }
 
+    // Fetch current order status before updating
+    const currentOrderRows = await sql`
+      SELECT status FROM orders WHERE id = ${orderId} LIMIT 1
+    `;
+    if (currentOrderRows.length === 0) {
+      return NextResponse.json({ error: 'Order not found' }, { status: 404 });
+    }
+    const previousStatus = currentOrderRows[0].status as string;
+
+    // Inventory management:
+    // Deduct stock when transitioning INTO processing (order is being fulfilled)
+    // Restore stock when transitioning OUT OF processing back to any other status
+    const goingToProcessing   = previousStatus !== 'processing' && status === 'processing';
+    const leavingProcessing   = previousStatus === 'processing' && status !== 'processing';
+
+    if (goingToProcessing || leavingProcessing) {
+      // Fetch all items in this order (product_id + quantity)
+      const orderItems = await sql`
+        SELECT product_id, quantity FROM order_items WHERE order_id = ${orderId}
+      `;
+
+      for (const item of orderItems) {
+        if (goingToProcessing) {
+          // Deduct stock — clamp at 0 so stock never goes negative
+          await sql`
+            UPDATE products
+            SET stock_quantity = GREATEST(stock_quantity - ${item.quantity}, 0),
+                updated_at = NOW()
+            WHERE id = ${item.product_id}
+          `;
+        } else {
+          // Restore stock
+          await sql`
+            UPDATE products
+            SET stock_quantity = stock_quantity + ${item.quantity},
+                updated_at = NOW()
+            WHERE id = ${item.product_id}
+          `;
+        }
+      }
+    }
+
     // Update order status
     await sql`
       UPDATE orders 

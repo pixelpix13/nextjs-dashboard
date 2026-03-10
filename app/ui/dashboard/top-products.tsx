@@ -30,7 +30,7 @@ export default async function TopProducts() {
           {products.map((product, index) => (
             <Link
               key={product.id}
-              href={`/products/${product.id}`}
+              href={`/dashboard/products/${product.id}/edit`}
               className="flex items-center justify-between rounded-lg border border-gray-100 p-4 transition-colors hover:bg-gray-50"
             >
               <div className="flex items-center gap-4">
